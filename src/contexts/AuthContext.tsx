@@ -22,21 +22,38 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [profile, setProfile] = useState<UserProfile | null>(null)
   const [session, setSession] = useState<Session | null>(null)
   const [loading, setLoading] = useState(true)
+  const [initialized, setInitialized] = useState(false)
 
   useEffect(() => {
-    // 获取初始会话
+    let isMounted = true
+
+    /**
+     * 获取初始会话状态
+     * 确保只在组件挂载时执行一次
+     */
     const getInitialSession = async () => {
-      const { data: { session }, error } = await supabase.auth.getSession()
-      if (error) {
-        console.error('Error getting session:', error)
-      } else {
-        setSession(session)
-        setUser(session?.user ?? null)
-        if (session?.user) {
-          await fetchUserProfile(session.user.id)
+      try {
+        const { data: { session }, error } = await supabase.auth.getSession()
+        
+        if (!isMounted) return
+        
+        if (error) {
+          console.error('Error getting session:', error)
+        } else {
+          setSession(session)
+          setUser(session?.user ?? null)
+          if (session?.user) {
+            await fetchUserProfile(session.user.id)
+          }
+        }
+      } catch (error) {
+        console.error('Error in getInitialSession:', error)
+      } finally {
+        if (isMounted) {
+          setLoading(false)
+          setInitialized(true)
         }
       }
-      setLoading(false)
     }
 
     getInitialSession()
@@ -45,21 +62,29 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
         console.log('Auth state changed:', event, session)
-        setSession(session)
-        setUser(session?.user ?? null)
         
-        if (session?.user) {
-          await fetchUserProfile(session.user.id)
-        } else {
-          setProfile(null)
+        if (!isMounted) return
+        
+        // 只有在初始化完成后才处理状态变化
+        // 避免与初始会话获取产生竞态条件
+        if (initialized) {
+          setSession(session)
+          setUser(session?.user ?? null)
+          
+          if (session?.user) {
+            await fetchUserProfile(session.user.id)
+          } else {
+            setProfile(null)
+          }
         }
-        
-        setLoading(false)
       }
     )
 
-    return () => subscription.unsubscribe()
-  }, [])
+    return () => {
+      isMounted = false
+      subscription.unsubscribe()
+    }
+  }, [initialized])
 
   const fetchUserProfile = async (userId: string) => {
     try {
@@ -102,11 +127,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return { error }
   }
 
+  /**
+   * 使用GitHub OAuth登录
+   * 根据当前环境自动设置正确的重定向URL
+   */
   const signInWithGithub = async () => {
+    // 获取当前环境的基础URL
+    const getRedirectUrl = () => {
+      const currentOrigin = window.location.origin
+      
+      // 确保总是使用当前访问的域名作为重定向基础
+      // 这样在生产环境中会自动使用正确的Vercel域名
+      // 在开发环境中会使用localhost
+      return `${currentOrigin}/dashboard`
+    }
+
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'github',
       options: {
-        redirectTo: `${window.location.origin}/dashboard`
+        redirectTo: getRedirectUrl()
       }
     })
     return { error }
